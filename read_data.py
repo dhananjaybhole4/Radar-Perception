@@ -65,6 +65,7 @@ def compute_rdm(virtual: np.ndarray) -> np.ndarray:
     # FFT across fast time
     range_signal = virtual*win_r
     range_fft = np.fft.fft(range_signal, NS, axis = 0)
+    range_fft = range_fft[:NS//2, :, :]
 
     # FFT across slow time
     doppler_signal = range_fft*win_d
@@ -76,35 +77,88 @@ def compute_rdm(virtual: np.ndarray) -> np.ndarray:
     print(f"range doppler map shape: {rdm.shape}")
     return rdm
 
-def draw_rdm_heatmap(rdm: np.ndarray) -> np.ndarray:
-    fig, ax = plt.subplots()
+def draw_plots(rdm: np.ndarray,
+               ram: np.ndarray):
+    fig, axes = plt.subplots(1,2, figsize = (12,5))
 
+    # plot for rdm
+    ax = axes[0]
     n_range, n_doppler = rdm.shape
-    r_ax = (np.arange(n_range)*RANGE_RES)
-    v_ax = (np.arange(n_doppler) - n_doppler//2)*VEL_RES
+    r_ax = np.arange(n_range)*RANGE_RES
+    d_ax = (np.arange(n_doppler) - n_doppler//2)*VEL_RES
     rdm_db = 20*np.log10(rdm + 1e-9)
-    im = ax.imshow(rdm_db, 
-                   extent = [v_ax[0], v_ax[-1], r_ax[0], r_ax[-1]],
+    v_max_rdm = rdm_db.max()
+
+    im1 = ax.imshow(rdm_db, 
+                   extent = [d_ax[0], d_ax[-1], r_ax[0], r_ax[-1]],
                    aspect = "auto",
-                   origin = "lower")
+                   origin = "lower",
+                   vmin = v_max_rdm - 80)
     ax.set_xlabel("Velocity (m/s)")
     ax.set_ylabel("Range (m)")
     ax.set_title("Range-Doppler Map")
+
+    # plot for ram
+    ax = axes[1]
+    n_range, n_virtual = ram.shape
+    k = (np.arange(n_virtual) - n_virtual//2)
+    print(k)
+    sin_theta = 2*k/n_virtual
+    v_ax = np.degrees(np.arcsin(np.clip(sin_theta, -1.0, 1.0)))
+    print(v_ax)
+    ram_db = 20*np.log10(ram + 1e-9)
+    v_max_ram = ram_db.max()
+
+    im2 = ax.imshow(ram_db,
+                    extent = [v_ax[0], v_ax[-1], r_ax[0], r_ax[-1]],
+                    aspect = "auto",
+                    origin = "lower",
+                    vmin = v_max_ram - 80)
+    ax.set_xlabel("Angle (deg)")
+    ax.set_ylabel("Range(m)")
+    ax.set_title("Range Angle Map")
+
     plt.show()
+
+def compute_ram(virtual: np.ndarray) -> np.ndarray:
+    NS, NC, V = virtual.shape
+
+    # generating blackman window for stability and to prevent leakage
+    win_r = windows.blackman(NS).reshape(-1, 1, 1).astype(np.float32)
+    win_a = windows.hann(V).reshape(1, -1).astype(np.float32)
+
+    # fft across fast time
+    range_signal = virtual*win_r
+    range_fft = np.fft.fft(range_signal, NS, axis = 0)
+    range_fft = range_fft[:NS//2, :, :]
+
+    # averaing over doppler axis
+    range_fft = np.mean(np.abs(range_fft), axis = 1)
+
+    # fft across virtual antennas
+    range_fft = range_fft*win_a
+    ram = np.fft.fft(range_fft, n = 64 ,axis = 1)
+    ram = np.fft.fftshift(np.abs(ram), axes = 1)
+    print(f"range angle map shape: {ram.shape}")
+    return ram
     
-
-
 
 def main():
     i = np.random.randint(0,len(radar_data_paths))
     print(f"Id for this frame is {radar_data_paths[i].stem}")
+
     # loading the matlab file to get data
-    radar_data = load_frame(radar_data_paths[i])
+    radar_data = load_frame(radar_data_paths[155])
     virtual = tdm_demux(radar_data)
     print(f"Data Shape: {radar_data.shape}")
     print(f"Virtual Data Shape: {virtual.shape}")
+
+    # computing range doppler and range angle map
     rdm = compute_rdm(virtual)
-    draw_rdm_heatmap(rdm)
+    ram = compute_ram(virtual)
+
+    # plotting the maps
+    draw_plots(rdm, ram)
     return 
 
 
