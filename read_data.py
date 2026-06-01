@@ -104,11 +104,12 @@ def compute_ram(virtual: np.ndarray) -> np.ndarray:
     
 def draw_plots(rdm: np.ndarray,
                ram: np.ndarray,
+               pointcloud: np.ndarray,
                i: int):
-    fig, axes = plt.subplots(1,3, figsize = (19,5))
+    fig, axes = plt.subplots(2,2, figsize = (12,10))
 
     # plot for rdm
-    ax = axes[0]
+    ax = axes[0,0]
     n_range, n_doppler = rdm.shape
     r_ax = np.arange(n_range)*RANGE_RES
     d_ax = (np.arange(n_doppler) - n_doppler//2)*VEL_RES
@@ -125,7 +126,7 @@ def draw_plots(rdm: np.ndarray,
     ax.set_title("Range-Doppler Map")
 
     # plot for ram
-    ax = axes[1]
+    ax = axes[0,1]
     n_range, n_virtual = ram.shape
     k = (np.arange(n_virtual) - n_virtual//2)
     sin_theta = 2*k/n_virtual
@@ -142,9 +143,24 @@ def draw_plots(rdm: np.ndarray,
     ax.set_ylabel("Range(m)")
     ax.set_title("Range Angle Map")
 
+    # plot the pointcloud
+    ax = axes[1,0]
+    if len(pointcloud) > 0:
+        pointcloud = np.array(pointcloud)
+        x_range = pointcloud[:, 0]
+        y_range = pointcloud[:, 1]
+        mag = pointcloud[:, 3]
+        im3 = ax.scatter(x_range, y_range, c = mag, cmap = "RdBu_r")
+        plt.colorbar(im3, ax=ax, label='Mag')
+    ax.set_xlabel("X lateral (m)")
+    ax.set_ylabel("Y_forward (m)")
+    ax.set_xlim(-10, 10)
+    ax.set_ylim(0, 10)
+
+
     # plot the image
-    ax = axes[2]
-    im3 = ax.imshow(Image.open(camera_data_paths[i]))
+    ax = axes[1,1]
+    im4 = ax.imshow(Image.open(camera_data_paths[i]))
 
     plt.show()
 
@@ -211,12 +227,32 @@ def estimate_angles(virtual: np.ndarray,
             continue
         angle_signal = doppler_fft[r, d, :]*win_a
         angle_fft = np.fft.fft(angle_signal, n_angle_fft)
-        angle_fft = np.abs(np.fft.fftshift(angle_fft))
+        angle_fft = 20*np.log10(np.abs(np.fft.fftshift(angle_fft)))
         idx = int(np.argmax(angle_fft))
         angle = angles_deg[idx]
         results.append((r, d, angle, float(angle_fft[idx])))
     return results
 
+def point_cloud(detection_with_angles: np.ndarray,
+                NC = 255) -> np.ndarray:
+
+    points = []
+
+    for (r_bin, d_bin, angle_deg, mag) in detection_with_angles:
+        # getting range from the range bin
+        range_m = r_bin*RANGE_RES
+
+        # getting velocity from doppler bin
+        v_centered = d_bin - NC//2
+        vel_mps = v_centered*VEL_RES
+
+        # getting angles angle in rad
+        angle_rad = np.radians(angle_deg)
+
+        x_range = np.sin(angle_rad)*range_m
+        y_range = np.cos(angle_rad)*range_m
+        points.append([x_range, y_range, vel_mps, mag])
+    return points
 
 def main():
     i = np.random.randint(0,len(radar_data_paths))
@@ -235,9 +271,11 @@ def main():
     print(detections)
     angles = estimate_angles(virtual, detections)
     print(angles)
+    pointcloud = point_cloud(angles)
+    print(pointcloud)
 
     # plotting the maps
-    draw_plots(rdm, ram, i)
+    draw_plots(rdm, ram, pointcloud, i)
     return 
 
 
