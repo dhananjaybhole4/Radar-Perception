@@ -4,6 +4,7 @@ import argparse
 from scipy.signal import windows
 from scipy.io import loadmat
 from pathlib import Path
+from PIL import Image
 
 # setting constants for hardware Texas Instruments AWR1843
 
@@ -32,6 +33,7 @@ MAX_VEL = VEL_RES*N_CHIRPS/2
 
 dataset = Path.cwd()/"Automotive"
 radar_data_paths = list(dataset.rglob("*.mat"))
+camera_data_paths = list(dataset.rglob("*.jpg"))
 
 # printing this physical quatities
 
@@ -77,49 +79,7 @@ def compute_rdm(virtual: np.ndarray) -> np.ndarray:
     print(f"range doppler map shape: {rdm.shape}")
     return rdm
 
-def draw_plots(rdm: np.ndarray,
-               ram: np.ndarray):
-    fig, axes = plt.subplots(1,2, figsize = (12,5))
-
-    # plot for rdm
-    ax = axes[0]
-    n_range, n_doppler = rdm.shape
-    r_ax = np.arange(n_range)*RANGE_RES
-    d_ax = (np.arange(n_doppler) - n_doppler//2)*VEL_RES
-    rdm_db = 20*np.log10(rdm + 1e-9)
-    v_max_rdm = rdm_db.max()
-
-    im1 = ax.imshow(rdm_db, 
-                   extent = [d_ax[0], d_ax[-1], r_ax[0], r_ax[-1]],
-                   aspect = "auto",
-                   origin = "lower",
-                   vmin = v_max_rdm - 80)
-    ax.set_xlabel("Velocity (m/s)")
-    ax.set_ylabel("Range (m)")
-    ax.set_title("Range-Doppler Map")
-
-    # plot for ram
-    ax = axes[1]
-    n_range, n_virtual = ram.shape
-    k = (np.arange(n_virtual) - n_virtual//2)
-    print(k)
-    sin_theta = 2*k/n_virtual
-    v_ax = np.degrees(np.arcsin(np.clip(sin_theta, -1.0, 1.0)))
-    print(v_ax)
-    ram_db = 20*np.log10(ram + 1e-9)
-    v_max_ram = ram_db.max()
-
-    im2 = ax.imshow(ram_db,
-                    extent = [v_ax[0], v_ax[-1], r_ax[0], r_ax[-1]],
-                    aspect = "auto",
-                    origin = "lower",
-                    vmin = v_max_ram - 80)
-    ax.set_xlabel("Angle (deg)")
-    ax.set_ylabel("Range(m)")
-    ax.set_title("Range Angle Map")
-
-    plt.show()
-
+# computing the range angle map from the virtual radar data
 def compute_ram(virtual: np.ndarray) -> np.ndarray:
     NS, NC, V = virtual.shape
 
@@ -142,13 +102,102 @@ def compute_ram(virtual: np.ndarray) -> np.ndarray:
     print(f"range angle map shape: {ram.shape}")
     return ram
     
+def draw_plots(rdm: np.ndarray,
+               ram: np.ndarray,
+               i: int):
+    fig, axes = plt.subplots(1,3, figsize = (19,5))
+
+    # plot for rdm
+    ax = axes[0]
+    n_range, n_doppler = rdm.shape
+    r_ax = np.arange(n_range)*RANGE_RES
+    d_ax = (np.arange(n_doppler) - n_doppler//2)*VEL_RES
+    rdm_db = 20*np.log10(rdm + 1e-9)
+    v_max_rdm = rdm_db.max()
+
+    im1 = ax.imshow(rdm_db, 
+                   extent = [d_ax[0], d_ax[-1], r_ax[0], r_ax[-1]],
+                   aspect = "auto",
+                   origin = "lower",
+                   vmin = v_max_rdm - 80)
+    ax.set_xlabel("Velocity (m/s)")
+    ax.set_ylabel("Range (m)")
+    ax.set_title("Range-Doppler Map")
+
+    # plot for ram
+    ax = axes[1]
+    n_range, n_virtual = ram.shape
+    k = (np.arange(n_virtual) - n_virtual//2)
+    sin_theta = 2*k/n_virtual
+    v_ax = np.degrees(np.arcsin(np.clip(sin_theta, -1.0, 1.0)))
+    ram_db = 20*np.log10(ram + 1e-9)
+    v_max_ram = ram_db.max()
+
+    im2 = ax.imshow(ram_db,
+                    extent = [v_ax[0], v_ax[-1], r_ax[0], r_ax[-1]],
+                    aspect = "auto",
+                    origin = "lower",
+                    vmin = v_max_ram - 80)
+    ax.set_xlabel("Angle (deg)")
+    ax.set_ylabel("Range(m)")
+    ax.set_title("Range Angle Map")
+
+    # plot the image
+    ax = axes[2]
+    im3 = ax.imshow(Image.open(camera_data_paths[i]))
+
+    plt.show()
+
+def ca_cfar_2d(rdm: np.ndarray,
+               guard: int = 4,
+               train: int = 8,
+               pfa: float = 1e-2,
+               static_bins: int = 2,
+               remove_static: bool = True) -> list[tuple[int,int]]:
+    """Function to apply constant false alarm rate to get the detections from range doppler map
+
+    Args:
+        rdm (np.ndarray): range doppler map_
+        guard (int, optional): cells to ignore around cell under test (CUT). Defaults to 4.
+        train (int, optional): cells to consider for averaging. Defaults to 8.
+        pfa (float, optional): probability of false alarm. Defaults to 1e-3.
+
+    Returns:
+        list[tuple[int,int]]: list containing all the detected pair of range and velocity
+    """
+    n_range, n_doppler = rdm.shape
+    alpha = train*(pfa**(-1.0/train) - 1)
+    pad = guard + train
+    detection = []
+    zero_bin = n_doppler//2
+
+    for r in range(pad, n_range - pad):
+        for d in range(pad, n_doppler - pad):
+            if (remove_static and abs(zero_bin - d) <= static_bins):
+                continue
+            region = rdm[r-pad : r + pad + 1, d - pad : d + pad + 1].copy()
+            guard_mask = np.zeros_like(region, dtype = bool)
+            g = guard
+            guard_mask[pad - g : pad + g + 1, pad - g : pad + g + 1] = True
+            noise = np.mean(region[~guard_mask])
+            if rdm[r,d] > noise*alpha:
+                detection.append((r,d))
+    
+    print(f"CFAR Detections : {len(detection)}")
+    return detection
+
+def estimate_angles(virtual: np.ndarray,
+                    detections: list,
+                    n_angle_fft: int = 64) -> list:
+    return
+
 
 def main():
     i = np.random.randint(0,len(radar_data_paths))
-    print(f"Id for this frame is {radar_data_paths[i].stem}")
+    print(f"Id for this frame is {i}")
 
     # loading the matlab file to get data
-    radar_data = load_frame(radar_data_paths[155])
+    radar_data = load_frame(radar_data_paths[i])
     virtual = tdm_demux(radar_data)
     print(f"Data Shape: {radar_data.shape}")
     print(f"Virtual Data Shape: {virtual.shape}")
@@ -156,9 +205,11 @@ def main():
     # computing range doppler and range angle map
     rdm = compute_rdm(virtual)
     ram = compute_ram(virtual)
+    detections = ca_cfar_2d(rdm, guard = 2, train = 4,remove_static=True)
+    print(detections)
 
     # plotting the maps
-    draw_plots(rdm, ram)
+    draw_plots(rdm, ram, i)
     return 
 
 
