@@ -189,7 +189,33 @@ def ca_cfar_2d(rdm: np.ndarray,
 def estimate_angles(virtual: np.ndarray,
                     detections: list,
                     n_angle_fft: int = 64) -> list:
-    return
+    NS, NC, V = virtual.shape
+    
+    # Generated windows to add to signal to prevent leakage
+    win_r = windows.blackman(NS).reshape(-1, 1, 1).astype(np.float32)
+    win_d = windows.blackman(NC).reshape(1, -1, 1).astype(np.float32)
+    win_a = windows.hann(V).astype(np.float32)
+
+    # Performing FFT
+    range_fft = np.fft.fft(virtual*win_r, NS, axis = 0)
+    doppler_fft = np.fft.fft(range_fft*win_d, NC, axis = 1)
+    doppler_fft = np.fft.fftshift(doppler_fft, axes = 1)
+
+    # Angle axis
+    angle_bin_idx = 2*(np.arange(n_angle_fft) - n_angle_fft//2)/n_angle_fft
+    angles_deg = np.degrees(np.arcsin(np.clip(angle_bin_idx,-1.0, 1.0)))
+
+    results = []
+    for (r, d) in detections:
+        if r > NS or d > NC:
+            continue
+        angle_signal = doppler_fft[r, d, :]*win_a
+        angle_fft = np.fft.fft(angle_signal, n_angle_fft)
+        angle_fft = np.abs(np.fft.fftshift(angle_fft))
+        idx = int(np.argmax(angle_fft))
+        angle = angles_deg[idx]
+        results.append((r, d, angle, float(angle_fft[idx])))
+    return results
 
 
 def main():
@@ -207,6 +233,8 @@ def main():
     ram = compute_ram(virtual)
     detections = ca_cfar_2d(rdm, guard = 2, train = 4,remove_static=True)
     print(detections)
+    angles = estimate_angles(virtual, detections)
+    print(angles)
 
     # plotting the maps
     draw_plots(rdm, ram, i)
