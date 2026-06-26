@@ -221,3 +221,5 @@ Automotive
 *.ipynb
 Research papers
 
+*.json
+.vscode/
